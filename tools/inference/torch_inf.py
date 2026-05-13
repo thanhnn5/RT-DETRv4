@@ -34,7 +34,10 @@ def draw(images, labels, boxes, scores, thrh=0.4):
 
 
 def process_image(model, device, file_path):
-    im_pil = Image.open(file_path).convert('RGB')
+    im_bgr = cv2.imread(file_path)
+    im_rgb = cv2.cvtColor(im_bgr, cv2.COLOR_BGR2RGB)
+    im_pil = Image.fromarray(im_rgb)
+
     w, h = im_pil.size
     orig_size = torch.tensor([[w, h]]).to(device)
 
