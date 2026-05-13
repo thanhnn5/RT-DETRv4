@@ -10,9 +10,6 @@ import torch.utils.data
 
 import torchvision
 
-import os
-import cv2
-import numpy as np
 from PIL import Image
 import faster_coco_eval
 import faster_coco_eval.core.mask as coco_mask
@@ -40,18 +37,6 @@ class CocoDetection(torchvision.datasets.CocoDetection, DetDataset):
         self.ann_file = ann_file
         self.return_masks = return_masks
         self.remap_mscoco_category = remap_mscoco_category
-
-    def _load_image(self, id: int) -> Image.Image:
-        # Override torchvision's PIL loader so EXIF orientation is honored.
-        # cv2.imread applies EXIF rotation by default (disable with IMREAD_IGNORE_ORIENTATION).
-        path = self.coco.loadImgs(id)[0]["file_name"]
-        full_path = os.path.join(self.root, path)
-        bgr = cv2.imread(full_path, cv2.IMREAD_COLOR)
-        if bgr is None:
-            # Fallback to PIL for formats cv2 can't decode (e.g. some 16-bit pngs)
-            return Image.open(full_path).convert("RGB")
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        return Image.fromarray(rgb)
 
     def __getitem__(self, idx):
         img, target = self.load_item(idx)
