@@ -46,6 +46,20 @@ def main(args, ) -> None:
 
     print('cfg: ', cfg.__dict__)
 
+    if cfg.use_wandb and dist_utils.is_main_process():
+        import wandb
+        run_name = cfg.wandb_run_name
+        if run_name is None and cfg.output_dir:
+            from pathlib import Path
+            run_name = Path(cfg.output_dir).name
+        wandb.init(
+            project=cfg.wandb_project,
+            name=run_name,
+            config=cfg.yaml_cfg,
+            sync_tensorboard=True,
+            resume='allow',
+        )
+
     solver = TASKS[cfg.yaml_cfg['task']](cfg)
 
     if args.test_only:
@@ -70,6 +84,12 @@ if __name__ == '__main__':
     parser.add_argument('--output-dir', type=str, help='output directoy')
     parser.add_argument('--summary-dir', type=str, help='tensorboard summry')
     parser.add_argument('--test-only', action='store_true', default=False,)
+
+    # wandb (enabled by default; sync_tensorboard mirrors SummaryWriter scalars)
+    parser.add_argument('--no-wandb', dest='use_wandb', action='store_false', default=None,
+                        help='disable wandb logging')
+    parser.add_argument('--wandb-project', type=str, help='wandb project name')
+    parser.add_argument('--wandb-run-name', type=str, help='wandb run name (defaults to output_dir basename)')
 
     # priority 1
     parser.add_argument('-u', '--update', nargs='+', help='update yaml config')
