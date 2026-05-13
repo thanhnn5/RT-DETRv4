@@ -4,7 +4,7 @@ evaluator:
   type: CocoEvaluator
   iou_types: ['bbox', ]
 
-num_classes: 777 # your dataset classes
+num_classes: 2 # your dataset classes
 remap_mscoco_category: False
 
 train_dataloader:
@@ -16,7 +16,6 @@ train_dataloader:
     return_masks: False
     transforms:
       type: Compose
-      ops: ~
   shuffle: True
   num_workers: 4
   drop_last: True
@@ -33,7 +32,6 @@ val_dataloader:
     return_masks: False
     transforms:
       type: Compose
-      ops: ~
   shuffle: False
   num_workers: 4
   drop_last: False
