@@ -158,11 +158,19 @@ class DetSolver(BaseSolver):
                 self.device
             )
 
-            # TODO
+            # Human-readable names for the 12 pycocotools bbox stats
+            coco_bbox_stat_names = [
+                'AP', 'AP50', 'AP75', 'AP_small', 'AP_medium', 'AP_large',
+                'AR_1', 'AR_10', 'AR_100', 'AR_small', 'AR_medium', 'AR_large',
+            ]
             for k in test_stats:
                 if self.writer and dist_utils.is_main_process():
                     for i, v in enumerate(test_stats[k]):
-                        self.writer.add_scalar(f'Test/{k}_{i}'.format(k), v, epoch)
+                        if k == 'coco_eval_bbox' and i < len(coco_bbox_stat_names):
+                            tag = f'Test/{coco_bbox_stat_names[i]}'
+                        else:
+                            tag = f'Test/{k}_{i}'
+                        self.writer.add_scalar(tag, v, epoch)
 
                 if k in best_stat:
                     best_stat['epoch'] = epoch if test_stats[k][0] > best_stat[k] else best_stat['epoch']
