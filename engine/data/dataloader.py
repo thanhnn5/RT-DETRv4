@@ -21,6 +21,7 @@ from functools import partial
 from ..core import register
 torchvision.disable_beta_transforms_warning()
 from copy import deepcopy
+from collections import defaultdict
 from PIL import Image, ImageDraw
 import os
 
@@ -94,13 +95,21 @@ def generate_scales(base_size, base_size_repeat):
 @register() 
 class BatchImageCollateFunction(BaseCollateFunction):
     def __init__(
-        self, 
-        stop_epoch=None, 
+        self,
+        stop_epoch=None,
         ema_restart_decay=0.9999,
         base_size=640,
         base_size_repeat=None,
         mixup_prob=0.0,
         mixup_epochs=[0, 0],
+        copyblend_prob=0.0,
+        copyblend_epochs=[0, 0],
+        copyblend_type='blend',
+        area_threshold=100,
+        num_objects=3,
+        with_expand=False,
+        expand_ratios=[0.1, 0.25],
+        random_num_objects=False,
         data_vis=False,
         vis_save='./vis_dataset/'
     ) -> None:
@@ -111,14 +120,27 @@ class BatchImageCollateFunction(BaseCollateFunction):
         self.ema_restart_decay = ema_restart_decay
         # FIXME Mixup
         self.mixup_prob, self.mixup_epochs = mixup_prob, mixup_epochs
-        if self.mixup_prob > 0:
-            self.data_vis, self.vis_save = data_vis, vis_save
+        # CopyBlend
+        self.copyblend_prob, self.copyblend_epochs, self.copyblend_type = copyblend_prob, copyblend_epochs, copyblend_type
+        self.area_threshold, self.num_objects = area_threshold, num_objects
+        self.with_expand, self.expand_ratios, self.random_num_objects = with_expand, expand_ratios, random_num_objects
+        self.data_vis, self.vis_save = data_vis, vis_save
+        if self.mixup_prob > 0 or self.copyblend_prob > 0:
             os.makedirs(self.vis_save, exist_ok=True) if self.data_vis else None
-            print("     ### Using MixUp with Prob@{} in {} epochs ### ".format(self.mixup_prob, self.mixup_epochs))
+            if self.mixup_prob > 0:
+                print("     ### Using MixUp with Prob@{} in {} epochs ### ".format(self.mixup_prob, self.mixup_epochs))
+            if self.copyblend_prob > 0:
+                print("     ### Using CopyBlend-{} with Prob@{} in {} epochs ### ".format(self.copyblend_type, self.copyblend_prob, self.copyblend_epochs))
+                print(f'     ### CopyBlend -- area threshold@{self.area_threshold} and num of object@{self.num_objects} ###     ')
+                if self.with_expand:
+                    print(f'     ### CopyBlend -- expand@{self.expand_ratios} ###     ')
+                if self.random_num_objects:
+                    print(f'     ### CopyBlend -- random num of objects@{[1, self.num_objects]} ###     ')
         if stop_epoch is not None:
             print("     ### Multi-scale Training until {} epochs ### ".format(self.stop_epoch))
             print("     ### Multi-scales@ {} ###        ".format(self.scales))
         self.print_info_flag = True
+        self.print_copyblend_flag = True
         # self.interpolation = interpolation
 
     def apply_mixup(self, images, targets):
@@ -137,52 +159,185 @@ class BatchImageCollateFunction(BaseCollateFunction):
             print(f"     ### Attention --- Mixup is closed after epoch@ {self.epoch} ###")
             self.print_info_flag = False
 
-        # Apply Mixup if within specified epoch range and probability threshold
-        if random.random() < self.mixup_prob and self.mixup_epochs[0] <= self.epoch < self.mixup_epochs[-1]:
-            # Generate mixup ratio
-            beta = round(random.uniform(0.45, 0.55), 6)
+        # Apply Mixup (caller is responsible for probability/epoch gating)
+        # Generate mixup ratio
+        beta = round(random.uniform(0.45, 0.55), 6)
 
-            # Mix images
-            images = images.roll(shifts=1, dims=0).mul_(1.0 - beta).add_(images.mul(beta))
+        # Mix images
+        images = images.roll(shifts=1, dims=0).mul_(1.0 - beta).add_(images.mul(beta))
 
-            # Prepare targets for Mixup
-            shifted_targets = targets[-1:] + targets[:-1]
-            updated_targets = deepcopy(targets)
+        # Prepare targets for Mixup
+        shifted_targets = targets[-1:] + targets[:-1]
+        updated_targets = deepcopy(targets)
 
-            for i in range(len(targets)):
-                # Combine boxes, labels, and areas from original and shifted targets
-                updated_targets[i]['boxes'] = torch.cat([targets[i]['boxes'], shifted_targets[i]['boxes']], dim=0)
-                updated_targets[i]['labels'] = torch.cat([targets[i]['labels'], shifted_targets[i]['labels']], dim=0)
-                updated_targets[i]['area'] = torch.cat([targets[i]['area'], shifted_targets[i]['area']], dim=0)
+        for i in range(len(targets)):
+            # Combine boxes, labels, and areas from original and shifted targets
+            updated_targets[i]['boxes'] = torch.cat([targets[i]['boxes'], shifted_targets[i]['boxes']], dim=0)
+            updated_targets[i]['labels'] = torch.cat([targets[i]['labels'], shifted_targets[i]['labels']], dim=0)
+            updated_targets[i]['area'] = torch.cat([targets[i]['area'], shifted_targets[i]['area']], dim=0)
 
-                # Add mixup ratio to targets
-                updated_targets[i]['mixup'] = torch.tensor(
-                    [beta] * len(targets[i]['labels']) + [1.0 - beta] * len(shifted_targets[i]['labels']), 
-                    dtype=torch.float32
-                    )
-            targets = updated_targets
+            # Add mixup ratio to targets
+            updated_targets[i]['mixup'] = torch.tensor(
+                [beta] * len(targets[i]['labels']) + [1.0 - beta] * len(shifted_targets[i]['labels']),
+                dtype=torch.float32
+                )
+        targets = updated_targets
 
-            if self.data_vis:
-                for i in range(len(updated_targets)):
-                    image_tensor = images[i]
-                    image_tensor_uint8 = (image_tensor * 255).type(torch.uint8)
-                    image_numpy = image_tensor_uint8.numpy().transpose((1, 2, 0))
-                    pilImage = Image.fromarray(image_numpy)
-                    draw = ImageDraw.Draw(pilImage)
-                    print('mix_vis:', i, 'boxes.len=', len(updated_targets[i]['boxes']))
-                    for box in updated_targets[i]['boxes']:
-                        draw.rectangle([int(box[0]*640 - (box[2]*640)/2), int(box[1]*640 - (box[3]*640)/2), 
-                                        int(box[0]*640 + (box[2]*640)/2), int(box[1]*640 + (box[3]*640)/2)], outline=(255,255,0))
-                    pilImage.save(self.vis_save + str(i) + "_"+ str(len(updated_targets[i]['boxes'])) +'_out.jpg')
+        if self.data_vis:
+            for i in range(len(updated_targets)):
+                image_tensor = images[i]
+                image_tensor_uint8 = (image_tensor * 255).type(torch.uint8)
+                image_numpy = image_tensor_uint8.numpy().transpose((1, 2, 0))
+                pilImage = Image.fromarray(image_numpy)
+                draw = ImageDraw.Draw(pilImage)
+                print('mix_vis:', i, 'boxes.len=', len(updated_targets[i]['boxes']))
+                for box in updated_targets[i]['boxes']:
+                    draw.rectangle([int(box[0]*640 - (box[2]*640)/2), int(box[1]*640 - (box[3]*640)/2),
+                                    int(box[0]*640 + (box[2]*640)/2), int(box[1]*640 + (box[3]*640)/2)], outline=(255,255,0))
+                pilImage.save(self.vis_save + str(i) + "_"+ str(len(updated_targets[i]['boxes'])) +'_out.jpg')
 
         return images, targets
+
+    def apply_copyblend(self, images, targets):
+        """
+        Applies CopyBlend augmentation: copies object patches sampled from the batch
+        and (alpha-)blends them into random positions of each image. Adds the pasted
+        objects to the corresponding targets.
+
+        Args:
+            images (torch.Tensor): Batch of images, shape (B, C, H, W).
+            targets (list[dict]): Per-image targets with keys 'boxes' (cxcywh, normalized),
+                'labels', 'area'.
+
+        Returns:
+            tuple: Updated images and targets.
+        """
+        if self.epoch == self.copyblend_epochs[-1] and self.print_copyblend_flag:
+            print(f"     ### Attention --- CopyBlend closed after epoch@ {self.epoch} ###")
+            self.print_copyblend_flag = False
+
+        if not (self.copyblend_epochs[0] <= self.epoch < self.copyblend_epochs[-1]
+                and random.random() < self.copyblend_prob):
+            return images, targets
+
+        # Blend ratio (used only for 'blend' type)
+        beta = round(random.uniform(0.45, 0.55), 6)
+
+        objects_pool = defaultdict(list)
+        img_height, img_width = images[0].shape[-2:]
+
+        for i in range(len(images)):
+            source_boxes = targets[i]['boxes']
+            source_labels = targets[i]['labels']
+            source_areas = targets[i]['area']
+            valid_objects = [idx for idx in range(len(source_boxes)) if source_areas[idx] >= self.area_threshold]
+            for idx in valid_objects:
+                objects_pool['boxes'].append(source_boxes[idx])
+                objects_pool['labels'].append(source_labels[idx])
+                objects_pool['areas'].append(source_areas[idx])
+                objects_pool['image_idx'].append(i)
+                objects_pool['image_height'].append(img_height)
+                objects_pool['image_width'].append(img_width)
+
+        if len(objects_pool['boxes']) == 0:
+            return images, targets
+
+        for key in ['boxes', 'labels', 'areas']:
+            objects_pool[key] = torch.stack(objects_pool[key]) if objects_pool[key] else torch.tensor([])
+
+        batch_size = len(images)
+        updated_images = images.clone()
+        updated_targets = deepcopy(targets)
+
+        for i in range(batch_size):
+            if self.random_num_objects:
+                num_objects = random.randint(1, min(self.num_objects, len(objects_pool['boxes'])))
+            else:
+                num_objects = min(self.num_objects, len(objects_pool['boxes']))
+
+            selected_indices = random.sample(range(len(objects_pool['boxes'])), num_objects)
+
+            blend_boxes = []
+            blend_labels = []
+            blend_areas = []
+            blend_mixup_ratios = []
+
+            for idx in selected_indices:
+                box = objects_pool['boxes'][idx]
+                label = objects_pool['labels'][idx]
+                area = objects_pool['areas'][idx]
+                source_idx = objects_pool['image_idx'][idx]
+                source_height = objects_pool['image_height'][idx]
+                source_width = objects_pool['image_width'][idx]
+
+                cx, cy, w, h = box
+                x1_src, y1_src = int((cx - w / 2) * source_width), int((cy - h / 2) * source_height)
+                x2_src, y2_src = int((cx + w / 2) * source_width), int((cy + h / 2) * source_height)
+
+                x1_src, y1_src = max(x1_src, 0), max(y1_src, 0)
+                x2_src, y2_src = min(x2_src, img_width), min(y2_src, img_height)
+                new_w_px, new_h_px = x2_src - x1_src, y2_src - y1_src
+                if new_w_px <= 0 or new_h_px <= 0:
+                    continue
+
+                x1 = random.randint(0, img_width - new_w_px) if new_w_px < img_width else 0
+                y1 = random.randint(0, img_height - new_h_px) if new_h_px < img_height else 0
+                x2, y2 = x1 + new_w_px, y1 + new_h_px
+
+                new_cx, new_cy = (x1 + new_w_px / 2) / img_width, (y1 + new_h_px / 2) / img_height
+                new_w, new_h = new_w_px / img_width, new_h_px / img_height
+
+                blend_boxes.append(torch.tensor([new_cx, new_cy, new_w, new_h]))
+                blend_labels.append(label)
+                blend_areas.append(area)
+                blend_mixup_ratios.append(1.0 - beta)
+
+                if self.with_expand:
+                    alpha = round(random.uniform(self.expand_ratios[0], self.expand_ratios[1]), 6)
+                    expand_w, expand_h = int(new_w_px * alpha), int(new_h_px * alpha)
+                    x1_expand, y1_expand = x1_src - max(x1_src - expand_w, 0), y1_src - max(y1_src - expand_h, 0)
+                    x2_expand, y2_expand = min(x2_src + expand_w, img_width) - x2_src, min(y2_src + expand_h, img_height) - y2_src
+                    new_x1_expand, new_y1_expand = x1 - max(x1 - x1_expand, 0), y1 - max(y1 - y1_expand, 0)
+                    new_x2_expand, new_y2_expand = min(x2 + x2_expand, img_width) - x2, min(y2 + y2_expand, img_height) - y2
+                    x1_src, y1_src, x2_src, y2_src = x1_src - new_x1_expand, y1_src - new_y1_expand, x2_src + new_x2_expand, y2_src + new_y2_expand
+                    x1, y1, x2, y2 = x1 - new_x1_expand, y1 - new_y1_expand, x2 + new_x2_expand, y2 + new_y2_expand
+
+                copy_patch_orig = images[source_idx, :, y1_src:y2_src, x1_src:x2_src]
+                if self.copyblend_type == 'blend':
+                    blended_patch = updated_images[i, :, y1:y2, x1:x2] * beta + copy_patch_orig * (1 - beta)
+                    updated_images[i, :, y1:y2, x1:x2] = blended_patch
+                else:
+                    updated_images[i, :, y1:y2, x1:x2] = copy_patch_orig
+
+            if len(blend_boxes) > 0:
+                blend_boxes = torch.stack(blend_boxes)
+                blend_labels = torch.stack(blend_labels)
+                blend_areas = torch.stack(blend_areas)
+
+                updated_targets[i]['mixup'] = torch.tensor(
+                    [1.0] * len(updated_targets[i]['boxes']) + blend_mixup_ratios,
+                    dtype=torch.float32
+                )
+                updated_targets[i]['boxes'] = torch.cat([updated_targets[i]['boxes'], blend_boxes])
+                updated_targets[i]['labels'] = torch.cat([updated_targets[i]['labels'], blend_labels])
+                updated_targets[i]['area'] = torch.cat([updated_targets[i]['area'], blend_areas])
+
+        return updated_images, updated_targets
 
     def __call__(self, items):
         images = torch.cat([x[0][None] for x in items], dim=0)
         targets = [x[1] for x in items]
 
-        # Mixup
-        images, targets = self.apply_mixup(images, targets)
+        # Mixup / CopyBlend are mutually exclusive per batch (matches DEIMv2)
+        mixup_active = (
+            self.mixup_prob > 0
+            and self.mixup_epochs[0] <= self.epoch < self.mixup_epochs[-1]
+            and random.random() < self.mixup_prob
+        )
+        if mixup_active:
+            images, targets = self.apply_mixup(images, targets)
+        elif self.copyblend_prob > 0:
+            images, targets = self.apply_copyblend(images, targets)
 
         if self.scales is not None and self.epoch < self.stop_epoch:
             # sz = random.choice(self.scales)

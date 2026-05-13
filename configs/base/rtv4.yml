@@ -23,6 +23,15 @@ train_dataloader:
     mixup_prob: 0.5
     mixup_epochs: [4, 29]
     stop_epoch: 50    # epoch in [72, ~) stop `multiscales`
+    # CopyBlend (mutually exclusive with Mixup per-batch). Off by default.
+    copyblend_prob: 0.5
+    copyblend_epochs: [4, 50]
+    copyblend_type: 'blend'    # 'blend' (alpha-blend) or 'copy' (hard paste)
+    area_threshold: 100
+    num_objects: 3
+    with_expand: True
+    expand_ratios: [0.1, 0.25]
+    random_num_objects: False
 
 # Unfreezing BN
 HGNetv2:

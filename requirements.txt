@@ -3,6 +3,8 @@ torchvision
 faster-coco-eval>=1.6.5
 PyYAML
 tensorboard
+wandb
 scipy
 calflops
 transformers
+opencv-python
