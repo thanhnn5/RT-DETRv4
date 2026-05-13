@@ -83,6 +83,11 @@ class BaseConfig(object):
         self.summary_dir :str = None
         self.device : str = ''
 
+        # wandb (enabled by default; sync_tensorboard mirrors SummaryWriter scalars)
+        self.use_wandb :bool = True
+        self.wandb_project :str = 'rt-detrv4'
+        self.wandb_run_name :str = None
+
         # distillation: General distillation control switch
         self._teacher_model: nn.Module = None
 
