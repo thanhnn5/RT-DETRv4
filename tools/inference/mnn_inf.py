@@ -30,9 +30,6 @@ import numpy as np
 import MNN
 import MNN.expr as F
 
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-
 # MNN forward types — values must match the MNNForwardType enum in
 # include/MNN/MNNForwardType.h. Requesting an id that the linked libMNN was
 # not built with (e.g. 'coreml' on Linux, 'cuda' on macOS) makes MNN silently
@@ -119,7 +116,6 @@ class MNNDetector:
         h, w = self.input_hw
         img = cv2.resize(image_bgr, (w, h))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        img = (img - IMAGENET_MEAN) / IMAGENET_STD
         img = img.transpose(2, 0, 1)           # HWC → CHW
         return img[np.newaxis].astype(np.float32)   # → (1, 3, H, W)
 
