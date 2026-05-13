@@ -8,6 +8,7 @@ Copyright (c) 2023 lyuwenyu. All Rights Reserved.
 
 import os
 import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))
 
 import torch
@@ -42,35 +43,33 @@ def main(args, ):
         def __init__(self, ) -> None:
             super().__init__()
             self.model = cfg.model.deploy()
-            self.postprocessor = cfg.postprocessor.deploy()
 
-        def forward(self, images, orig_target_sizes):
+        def forward(self, images):
             outputs = self.model(images)
-            outputs = self.postprocessor(outputs, orig_target_sizes)
-            return outputs
+            return outputs['pred_logits'], outputs['pred_boxes']
 
     model = Model()
+    model = model.cpu()
+    model.eval()
 
-    data = torch.rand(32, 3, 640, 640)
-    size = torch.tensor([[640, 640]])
-    _ = model(data, size)
+    img_size = cfg.yaml_cfg["eval_spatial_size"]
+    data = torch.rand(1, 3, *img_size)
+    _ = model(data)
 
-    dynamic_axes = {
-        'images': {0: 'N', },
-        'orig_target_sizes': {0: 'N'}
-    }
+    # dynamic_axes = {'images': {0: 'N'}}
+    dynamic_axes = None
 
     output_file = args.resume.replace('.pth', '.onnx') if args.resume else 'model.onnx'
 
     torch.onnx.export(
         model,
-        (data, size),
+        (data,),
         output_file,
-        input_names=['images', 'orig_target_sizes'],
-        output_names=['labels', 'boxes', 'scores'],
+        input_names=['images'],
+        output_names=['pred_logits', 'pred_boxes'],
         dynamic_axes=dynamic_axes,
-        opset_version=16,
-        verbose=False,
+        opset_version=args.opset,
+        verbose=True,
         do_constant_folding=True,
     )
 
@@ -83,9 +82,7 @@ def main(args, ):
     if args.simplify:
         import onnx
         import onnxsim
-        dynamic = True
-        # input_shapes = {'images': [1, 3, 640, 640], 'orig_target_sizes': [1, 2]} if dynamic else None
-        input_shapes = {'images': data.shape, 'orig_target_sizes': size.shape} if dynamic else None
+        input_shapes = {'images': data.shape}
         onnx_model_simplify, check = onnxsim.simplify(output_file, test_input_shapes=input_shapes)
         onnx.save(onnx_model_simplify, output_file)
         print(f'Simplify onnx model {check}...')
@@ -97,7 +94,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', '-c', default='configs/dfine/dfine_hgnetv2_l_coco.yml', type=str, )
     parser.add_argument('--resume', '-r', type=str, )
-    parser.add_argument('--check',  action='store_true', default=True,)
-    parser.add_argument('--simplify',  action='store_true', default=True,)
+    parser.add_argument('--opset', type=int, default=24,)
+    parser.add_argument('--check',  action='store_true')
+    parser.add_argument('--simplify',  action='store_true')
     args = parser.parse_args()
     main(args)

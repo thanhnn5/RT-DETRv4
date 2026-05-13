@@ -4,7 +4,7 @@ __include__: [
   '../dataset/custom_detection.yml'
 ]
 
-output_dir: ./outputs/rtv4_hgnetv2_s_coco
+output_dir: ./outputs/rtv4_hgnetv2_s_custom
 
 use_wandb: True
 wandb_project: DETR-PODPackage
